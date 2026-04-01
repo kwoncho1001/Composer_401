@@ -1,0 +1,185 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: projects
+    // Document ID: auto-generated
+    // Fields:
+    //   - name: string (required, < 100 chars)
+    //   - repoUrl: string (required, < 1000 chars)
+    //   - uid: string (required, immutable)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: notes
+    // Document ID: auto-generated
+    // Fields:
+    //   - title: string (required, < 200 chars)
+    //   - projectId: string (required, < 100 chars)
+    //   - summary: string (required, < 5000 chars)
+    //   - body: string (required, < 50000 chars)
+    //   - folder: string (required, < 500 chars)
+    //   - noteType: string (required, in ['Domain', 'Module', 'Logic', 'Snapshot'])
+    //   - status: string (required, in ['Planned', 'Done', 'Conflict'])
+    //   - priority: string (required, in ['A', 'B', 'C', 'Done'])
+    //   - lastUpdated: timestamp (required)
+    //   - parentNoteIds: list (required, < 100 items)
+    //   - childNoteIds: list (required, < 100 items)
+    //   - relatedNoteIds: list (required, < 100 items)
+    //   - originPath: string (optional, < 1000 chars)
+    //   - sha: string (optional, < 100 chars)
+    //   - uid: string (required, immutable)
+    //
+    // Collection: syncLedgers
+    // Document ID: auto-generated
+    // Fields:
+    //   - repoUrl: string (required, < 1000 chars)
+    //   - projectId: string (required, < 100 chars)
+    //   - fileShaMap: map (required)
+    //   - lastSyncedAt: timestamp (required)
+    //   - uid: string (required, immutable)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && (resource == null || !('uid' in resource.data) || request.auth.uid == resource.data.uid);
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+          (request.auth.token.email == "kwoncho1001@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('uid' in request.resource.data) || !('uid' in resource.data) || request.resource.data.uid == resource.data.uid;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+        request.resource.data[field].size() >= minLen &&
+        request.resource.data[field].size() <= maxLen;
+    }
+
+    function isValidList(listField, maxSize) {
+      return request.resource.data[listField] is list && request.resource.data[listField].size() <= maxSize;
+    }
+
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !(field in request.resource.data) ||
+             request.resource.data[field] == null ||
+             (request.resource.data[field] is string &&
+              request.resource.data[field].size() >= minLen &&
+              request.resource.data[field].size() <= maxLen);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidProject() {
+      let requiredFields = ['name', 'repoUrl', 'uid', 'createdAt'];
+      let allowedFields = ['name', 'repoUrl', 'uid', 'createdAt', 'id'];
+      return hasRequiredFields(requiredFields) &&
+             request.resource.data.keys().hasOnly(allowedFields) &&
+             validStringLength('name', 1, 100) &&
+             validStringLength('repoUrl', 0, 1000) &&
+             request.resource.data.createdAt is timestamp;
+    }
+
+    function isValidNote() {
+      let requiredFields = ['title', 'projectId', 'noteType', 'lastUpdated'];
+      let allowedFields = ['title', 'projectId', 'summary', 'components', 'flow', 'io', 'body', 'folder', 'noteType', 'status', 'priority', 'lastUpdated', 'parentNoteIds', 'childNoteIds', 'relatedNoteIds', 'originPath', 'sha', 'contentHash', 'embedding', 'uid', 'id', 'createdAt', 'conflictDetails'];
+      
+      return hasRequiredFields(requiredFields) &&
+             request.resource.data.keys().hasOnly(allowedFields) &&
+             validStringLength('title', 0, 200) &&
+             validStringLength('projectId', 1, 100) &&
+             isValidOptionalString('summary', 0, 50000) &&
+             isValidOptionalString('components', 0, 50000) &&
+             isValidOptionalString('flow', 0, 50000) &&
+             isValidOptionalString('io', 0, 50000) &&
+             isValidOptionalString('body', 0, 50000) &&
+             isValidOptionalString('folder', 0, 500) &&
+             request.resource.data.noteType in ['Domain', 'Module', 'Logic', 'Snapshot'] &&
+             (!('status' in request.resource.data) || request.resource.data.status in ['Planned', 'Done', 'Conflict']) &&
+             (!('priority' in request.resource.data) || request.resource.data.priority in ['A', 'B', 'C', 'Done']) &&
+             request.resource.data.lastUpdated is timestamp &&
+             (!('parentNoteIds' in request.resource.data) || isValidList('parentNoteIds', 100)) &&
+             (!('childNoteIds' in request.resource.data) || isValidList('childNoteIds', 100)) &&
+             (!('relatedNoteIds' in request.resource.data) || isValidList('relatedNoteIds', 100)) &&
+             isValidOptionalString('originPath', 0, 1000) &&
+             isValidOptionalString('sha', 0, 100) &&
+             isValidOptionalString('contentHash', 0, 100) &&
+             (!('embedding' in request.resource.data) || request.resource.data.embedding is list) &&
+             (!('conflictDetails' in request.resource.data) || request.resource.data.conflictDetails is map);
+    }
+
+    function isValidSyncLedger() {
+      let requiredFields = ['repoUrl', 'projectId', 'fileShaMap', 'lastSyncedAt', 'uid'];
+      let allowedFields = ['repoUrl', 'projectId', 'fileShaMap', 'lastSyncedAt', 'uid', 'id'];
+      
+      return hasRequiredFields(requiredFields) &&
+             request.resource.data.keys().hasOnly(allowedFields) &&
+             validStringLength('repoUrl', 0, 1000) &&
+             validStringLength('projectId', 1, 100) &&
+             request.resource.data.fileShaMap is map &&
+             request.resource.data.lastSyncedAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /projects/{projectId} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidProject() && uidUnchanged();
+      allow update: if (isDocOwner() || isAdmin()) && isValidProject() && uidNotModified();
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /notes/{noteId} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidNote() && uidUnchanged();
+      allow update: if (isDocOwner() || isAdmin()) && isValidNote() && uidNotModified();
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /syncLedgers/{ledgerId} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidSyncLedger() && uidUnchanged();
+      allow update: if (isDocOwner() || isAdmin()) && isValidSyncLedger() && uidNotModified();
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isOwner(userId) && request.resource.data.role == 'user';
+      allow update: if (isOwner(userId) && request.resource.data.role == resource.data.role) || isAdmin();
+    }
+  }
+}

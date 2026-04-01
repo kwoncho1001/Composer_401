@@ -1,0 +1,189 @@
+{
+  "entities": {
+    "Project": {
+      "title": "Project",
+      "description": "Represents a user's project workspace.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name of the project."
+        },
+        "repoUrl": {
+          "type": "string",
+          "description": "The GitHub repository URL associated with the project."
+        },
+        "uid": {
+          "type": "string",
+          "description": "The ID of the user who owns this project."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The creation timestamp."
+        }
+      },
+      "required": ["name", "repoUrl", "uid", "createdAt"]
+    },
+    "Note": {
+      "title": "Note",
+      "description": "Represents a project blueprint element (Domain, Module, Logic, or Snapshot).",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "The title of the note."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "The ID of the project this note belongs to."
+        },
+        "summary": {
+          "type": "string",
+          "description": "The core summary of the note."
+        },
+        "components": {
+          "type": "string",
+          "description": "The components involved in this note."
+        },
+        "flow": {
+          "type": "string",
+          "description": "The logic flow description."
+        },
+        "io": {
+          "type": "string",
+          "description": "The input/output specification."
+        },
+        "body": {
+          "type": "string",
+          "description": "The main content/body of the note."
+        },
+        "folder": {
+          "type": "string",
+          "description": "The folder path for hierarchical classification."
+        },
+        "noteType": {
+          "type": "string",
+          "enum": ["Domain", "Module", "Logic", "Snapshot"],
+          "description": "The type of the note."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Planned", "Done", "Conflict"],
+          "description": "The current progress status."
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["A", "B", "C", "Done"],
+          "description": "The priority of the task."
+        },
+        "lastUpdated": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The last updated timestamp."
+        },
+        "parentNoteIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of parent note IDs."
+        },
+        "childNoteIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of child note IDs."
+        },
+        "relatedNoteIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of related note IDs."
+        },
+        "originPath": {
+          "type": "string",
+          "description": "The full path of the source file in the project (Snapshot only)."
+        },
+        "sha": {
+          "type": "string",
+          "description": "The commit SHA value at the time of synchronization (Snapshot only)."
+        },
+        "contentHash": {
+          "type": "string",
+          "description": "The content hash for change detection."
+        },
+        "embedding": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Vector embedding for semantic search."
+        },
+        "uid": {
+          "type": "string",
+          "description": "The ID of the user who owns this note."
+        },
+        "conflictDetails": {
+          "type": "object",
+          "description": "Details about a conflict (if any)."
+        }
+      },
+      "required": ["title", "projectId", "summary", "body", "folder", "noteType", "status", "priority", "lastUpdated", "parentNoteIds", "childNoteIds", "relatedNoteIds", "uid"]
+    },
+    "SyncLedger": {
+      "title": "SyncLedger",
+      "description": "Represents the SHA synchronization ledger for a repository.",
+      "type": "object",
+      "properties": {
+        "repoUrl": {
+          "type": "string",
+          "description": "The URL of the GitHub repository."
+        },
+        "projectId": {
+          "type": "string",
+          "description": "The ID of the project this ledger belongs to."
+        },
+        "fileShaMap": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "A map of file paths to their last synced SHA."
+        },
+        "lastSyncedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The timestamp of the last synchronization."
+        },
+        "uid": {
+          "type": "string",
+          "description": "The ID of the user who owns this ledger."
+        }
+      },
+      "required": ["repoUrl", "projectId", "fileShaMap", "lastSyncedAt", "uid"]
+    }
+  },
+  "firestore": {
+    "/projects/{projectId}": {
+      "schema": {
+        "$ref": "#/entities/Project"
+      },
+      "description": "Stores user projects."
+    },
+    "/notes/{noteId}": {
+      "schema": {
+        "$ref": "#/entities/Note"
+      },
+      "description": "Stores all project blueprint notes."
+    },
+    "/syncLedgers/{ledgerId}": {
+      "schema": {
+        "$ref": "#/entities/SyncLedger"
+      },
+      "description": "Stores the synchronization ledgers for repositories."
+    }
+  }
+}

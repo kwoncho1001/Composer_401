@@ -1,0 +1,5 @@
+{
+  "name": "Composer 401",
+  "description": "A project management and GitHub sync tool for solo developers to visualize and manage their codebase.",
+  "requestFramePermissions": []
+}
