@@ -496,7 +496,7 @@ export const Sidebar = ({
             </div>
           )}
         </div>
-        <button onClick={onClose} className="p-2 hover:bg-accent rounded-xl text-muted-foreground ml-2 transition-colors" title="Close Sidebar">
+        <button onClick={onClose} className="hidden sm:flex p-2 hover:bg-accent rounded-xl text-muted-foreground ml-2 transition-colors" title="Close Sidebar">
           <PanelLeftClose size={18} />
         </button>
       </div>

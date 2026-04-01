@@ -24,7 +24,8 @@ import { db } from './firebase';
 import { Note } from './types';
 
 function MainApp() {
-  const { user, loading } = useAuth();
+  const { user, loading: authLoading } = useAuth();
+  const [isSigningIn, setIsSigningIn] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [isLeftOpen, setIsLeftOpen] = useState(true);
@@ -40,6 +41,16 @@ function MainApp() {
     }
     return 'dark';
   });
+
+  const handleSignIn = async () => {
+    if (isSigningIn) return;
+    setIsSigningIn(true);
+    try {
+      await signInWithGoogle();
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
 
   useEffect(() => {
     if (!user || !selectedProjectId) {
@@ -115,7 +126,7 @@ function MainApp() {
     setTheme(prev => prev === 'light' ? 'dark' : 'light');
   };
 
-  if (loading) {
+  if (authLoading) {
     return <div className="h-screen flex items-center justify-center bg-background text-foreground">Loading...</div>;
   }
 
@@ -129,10 +140,11 @@ function MainApp() {
           <h1 className="text-4xl font-bold mb-3 tracking-tight">Compose</h1>
           <p className="text-muted-foreground mb-10 text-lg">Vibe coding blueprint & sync for solo developers.</p>
           <button 
-            onClick={signInWithGoogle}
-            className="w-full py-4 bg-primary text-primary-foreground rounded-xl font-semibold hover:opacity-90 transition-all active:scale-[0.98] shadow-lg shadow-primary/20"
+            onClick={handleSignIn}
+            disabled={isSigningIn}
+            className="w-full py-4 bg-primary text-primary-foreground rounded-xl font-semibold hover:opacity-90 transition-all active:scale-[0.98] shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Sign in with Google
+            {isSigningIn ? 'Signing in...' : 'Sign in with Google'}
           </button>
         </div>
       </div>
@@ -142,31 +154,45 @@ function MainApp() {
   return (
     <div className="flex h-screen bg-background text-foreground font-sans selection:bg-primary/30 selection:text-primary-foreground">
       {/* Left Sidebar */}
-      {isLeftOpen ? (
-        <div 
-          className="relative flex border-r border-border bg-secondary/30 group/sidebar"
-          style={{ width: leftWidth }}
-        >
-          <Sidebar 
-            onSelectNote={(id) => setSelectedNoteId(id)} 
-            selectedNoteId={selectedNoteId} 
-            onClose={() => setIsLeftOpen(false)} 
-            selectedProjectId={selectedProjectId}
-            onSelectProject={setSelectedProjectId}
-          />
-          {/* Left Resizer Handle */}
-          <div 
-            className="absolute top-0 -right-1 w-2 h-full cursor-col-resize hover:bg-primary/40 transition-colors z-50 flex items-center justify-center"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              setIsResizingLeft(true);
-            }}
+      <AnimatePresence mode="wait">
+        {isLeftOpen && (
+          <motion.div 
+            initial={{ x: -300, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: -300, opacity: 0 }}
+            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+            className="fixed top-16 bottom-0 left-0 sm:relative sm:top-0 flex border-r border-border bg-secondary/30 group/sidebar z-40 shadow-2xl sm:shadow-none overflow-hidden"
+            style={{ width: typeof window !== 'undefined' && window.innerWidth < 640 ? '100%' : leftWidth }}
           >
-            <div className={`w-[1px] h-full ${isResizingLeft ? 'bg-primary' : 'bg-transparent'}`} />
-          </div>
-        </div>
-      ) : (
-        <div className="w-12 bg-secondary/30 border-r border-border flex flex-col items-center py-4 gap-4">
+            <Sidebar 
+              onSelectNote={(id) => {
+                setSelectedNoteId(id);
+                if (window.innerWidth < 640) setIsLeftOpen(false);
+              }} 
+              selectedNoteId={selectedNoteId} 
+              onClose={() => setIsLeftOpen(false)} 
+              selectedProjectId={selectedProjectId}
+              onSelectProject={(id) => {
+                setSelectedProjectId(id);
+              }}
+            />
+            {/* Left Resizer Handle */}
+            <div 
+              className="hidden sm:flex absolute top-0 -right-1 w-2 h-full cursor-col-resize hover:bg-primary/40 transition-colors z-50 items-center justify-center"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setIsResizingLeft(true);
+              }}
+            >
+              <div className={`w-[1px] h-full ${isResizingLeft ? 'bg-primary' : 'bg-transparent'}`} />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Collapsed Left Bar (Desktop only) */}
+      {!isLeftOpen && (
+        <div className="hidden sm:flex w-12 bg-secondary/30 border-r border-border flex-col items-center py-4 gap-4">
           <button 
             onClick={() => setIsLeftOpen(true)} 
             className="p-2 text-muted-foreground hover:bg-accent hover:text-foreground rounded-lg transition-colors"
@@ -179,74 +205,77 @@ function MainApp() {
       
       {/* Main Content */}
       <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-16 border-b border-border bg-card/50 backdrop-blur-md flex items-center justify-between px-8 sticky top-0 z-30">
-          <div className="flex items-center gap-6">
-            {!isLeftOpen && (
-              <button 
-                onClick={() => setIsLeftOpen(true)} 
-                className="p-2 text-muted-foreground hover:bg-muted rounded-xl transition-all"
-                title="Open Explorer"
-              >
-                <PanelLeftOpen size={20} />
-              </button>
-            )}
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-primary rounded-2xl flex items-center justify-center text-primary-foreground shadow-lg shadow-primary/20 glow-primary">
-                <Zap size={22} fill="currentColor" />
+        <header className="h-16 border-b border-border bg-card/50 backdrop-blur-md flex items-center justify-between px-4 sm:px-6 sticky top-0 z-50">
+          <div className="flex items-center gap-2 sm:gap-4">
+            {/* Mobile Sidebar Toggle */}
+            <button 
+              onClick={() => setIsLeftOpen(!isLeftOpen)}
+              className="p-2 sm:hidden text-muted-foreground hover:bg-muted rounded-xl transition-all active:scale-95"
+            >
+              {isLeftOpen ? <PanelLeftClose size={20} className="text-primary" /> : <PanelLeftOpen size={20} />}
+            </button>
+
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="w-8 h-8 sm:w-10 sm:h-10 bg-primary rounded-xl sm:rounded-2xl flex items-center justify-center text-primary-foreground shadow-lg shadow-primary/20 glow-primary shrink-0">
+                <Zap size={18} className="sm:hidden" fill="currentColor" />
+                <Zap size={22} className="hidden sm:block" fill="currentColor" />
               </div>
-              <div>
-                <h1 className="text-lg font-black tracking-tighter uppercase italic leading-none">Composer</h1>
-                <span className="text-[10px] font-bold text-muted-foreground/60 tracking-[0.2em] uppercase">System Engine</span>
+              <div className="hidden xs:block">
+                <h1 className="text-sm sm:text-lg font-black tracking-tighter uppercase italic leading-none">Composer</h1>
+                <span className="text-[8px] sm:text-[10px] font-bold text-muted-foreground/60 tracking-[0.2em] uppercase">System Engine</span>
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-6">
-            <div className="flex bg-muted/50 p-1 rounded-xl border border-border mr-4">
+
+          <div className="flex items-center gap-1 sm:gap-4">
+            <button 
+              onClick={() => setIsRightOpen(!isRightOpen)} 
+              className={`p-2 rounded-xl transition-all active:scale-95 border ${
+                isRightOpen 
+                  ? 'bg-primary text-primary-foreground border-primary shadow-lg shadow-primary/20' 
+                  : 'text-primary hover:bg-primary/10 border-primary/20'
+              }`}
+              title={isRightOpen ? "Close Sync Engine" : "Open Sync Engine"}
+            >
+              <Github size={18} />
+            </button>
+
+            <div className="hidden md:flex bg-muted/50 p-1 rounded-xl border border-border">
               <div className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest bg-primary text-primary-foreground shadow-md shadow-primary/20">
                 <Layers size={12} /> Editor
               </div>
             </div>
 
-            <div className="flex items-center gap-3 border-l border-border pl-6">
+            <div className="flex items-center gap-1 sm:gap-3 sm:border-l border-border sm:pl-4">
               <button 
                 onClick={toggleTheme}
-                className="p-2.5 text-muted-foreground hover:bg-muted rounded-xl transition-all active:scale-95"
+                className="p-2 text-muted-foreground hover:bg-muted rounded-xl transition-all active:scale-95 hidden sm:flex"
                 title={theme === 'light' ? 'Switch to Dark' : 'Switch to Light'}
               >
-                {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
+                {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
               </button>
               
-              <div className="flex items-center gap-3 px-3 py-1.5 hover:bg-muted rounded-2xl transition-all cursor-pointer group">
-                <div className="text-right hidden sm:block">
-                  <p className="text-xs font-bold leading-none group-hover:text-primary transition-colors">{user.displayName || 'Developer'}</p>
-                  <p className="text-[10px] text-muted-foreground/60 mt-0.5">{user.email}</p>
-                </div>
+              <div className="flex items-center gap-2 sm:gap-3 px-1 sm:px-2 py-1.5 hover:bg-muted rounded-2xl transition-all cursor-pointer group">
                 <img 
                   src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`} 
                   alt="Profile" 
-                  className="w-9 h-9 rounded-xl border-2 border-border group-hover:border-primary transition-all shadow-md"
+                  className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl border-2 border-border group-hover:border-primary transition-all shadow-md"
                   referrerPolicy="no-referrer"
                 />
+                <div className="text-right hidden lg:block">
+                  <p className="text-xs font-bold leading-none group-hover:text-primary transition-colors">{user.displayName || 'Developer'}</p>
+                  <p className="text-[10px] text-muted-foreground/60 mt-0.5">{user.email}</p>
+                </div>
               </div>
               
-              <button onClick={logout} className="p-2.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive rounded-xl transition-all active:scale-95" title="Sign out">
-                <LogOut size={20} />
+              <button onClick={logout} className="p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive rounded-xl transition-all active:scale-95" title="Sign out">
+                <LogOut size={18} />
               </button>
-
-              {!isRightOpen && selectedProjectId && (
-                <button 
-                  onClick={() => setIsRightOpen(true)} 
-                  className="p-2.5 text-primary hover:bg-primary/10 rounded-xl transition-all active:scale-95 border border-primary/20"
-                  title="Open Sync Engine"
-                >
-                  <Github size={20} />
-                </button>
-              )}
             </div>
           </div>
         </header>
         
-        <div className="flex-1 overflow-auto p-8 lg:p-12 bg-muted/5 relative">
+        <div className="flex-1 overflow-auto p-4 sm:p-8 lg:p-12 bg-muted/5 relative">
           <div className="max-w-6xl mx-auto w-full h-full">
             <AnimatePresence mode="wait">
               <motion.div 
@@ -278,14 +307,14 @@ function MainApp() {
       </main>
 
       {/* Right Sidebar */}
-      {isRightOpen && selectedProjectId ? (
+      {isRightOpen ? (
         <div 
-          className="relative border-l border-border bg-card/30 backdrop-blur-xl z-40 animate-in slide-in-from-right duration-300"
-          style={{ width: rightWidth }}
+          className="fixed top-16 bottom-0 right-0 sm:relative sm:top-0 border-l border-border bg-card/30 backdrop-blur-xl z-40 animate-in slide-in-from-right duration-300 shadow-2xl sm:shadow-none"
+          style={{ width: typeof window !== 'undefined' && window.innerWidth < 640 ? '100%' : rightWidth }}
         >
           {/* Right Resizer Handle */}
           <div 
-            className="absolute top-0 -left-1 w-2 h-full cursor-col-resize hover:bg-primary/40 transition-colors z-50 flex items-center justify-center"
+            className="hidden sm:flex absolute top-0 -left-1 w-2 h-full cursor-col-resize hover:bg-primary/40 transition-colors z-50 items-center justify-center"
             onMouseDown={(e) => {
               e.preventDefault();
               setIsResizingRight(true);
@@ -294,16 +323,6 @@ function MainApp() {
             <div className={`w-[1px] h-full ${isResizingRight ? 'bg-primary' : 'bg-transparent'}`} />
           </div>
           <GitHubSync onClose={() => setIsRightOpen(false)} projectId={selectedProjectId} />
-        </div>
-      ) : selectedProjectId ? (
-        <div className="w-12 bg-secondary/30 border-l border-border flex flex-col items-center py-4 gap-4">
-          <button 
-            onClick={() => setIsRightOpen(true)} 
-            className="p-2 text-muted-foreground hover:bg-accent hover:text-foreground rounded-lg transition-colors"
-            title="Open Sync Engine"
-          >
-            <PanelRightOpen size={20} />
-          </button>
         </div>
       ) : null}
     </div>

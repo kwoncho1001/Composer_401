@@ -43,6 +43,9 @@ export interface Note {
   sha?: string;
   contentHash?: string;
   embedding?: number[];
+  embeddingHash?: string;
+  embeddingModel?: string;
+  lastEmbeddedAt?: any; // Firestore Timestamp
   uid: string;
   conflictDetails?: ConflictDetails;
 }

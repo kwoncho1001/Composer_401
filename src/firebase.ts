@@ -20,12 +20,22 @@ async function testConnection() {
 }
 testConnection();
 
+let isSigningIn = false;
+
 export const signInWithGoogle = async () => {
+  if (isSigningIn) return;
+  isSigningIn = true;
+  
   const provider = new GoogleAuthProvider();
   try {
     await signInWithPopup(auth, provider);
-  } catch (error) {
-    console.error("Error signing in with Google", error);
+  } catch (error: any) {
+    // Ignore cancelled-popup-request as it's often a side effect of rapid clicks or environment issues
+    if (error.code !== 'auth/cancelled-popup-request' && error.code !== 'auth/popup-closed-by-user') {
+      console.error("Error signing in with Google", error);
+    }
+  } finally {
+    isSigningIn = false;
   }
 };
 

@@ -172,8 +172,34 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
       addLog('Pre-computing embeddings for existing Logic notes...');
       const existingLogicNotes = allNotes.filter(n => n.noteType === 'Logic');
       let existingLogicEmbeddings: number[][] = [];
+      
       if (existingLogicNotes.length > 0) {
-        existingLogicEmbeddings = await getEmbeddingsBulk(existingLogicNotes.map(n => `${n.title} ${n.summary}`));
+        const textsToEmbed: string[] = [];
+        const indicesToEmbed: number[] = [];
+        
+        existingLogicEmbeddings = new Array(existingLogicNotes.length).fill([]);
+        
+        existingLogicNotes.forEach((n, idx) => {
+          const text = `${n.title} ${n.summary}`;
+          if (n.embedding && n.embedding.length > 0) {
+            existingLogicEmbeddings[idx] = n.embedding;
+          } else {
+            textsToEmbed.push(text);
+            indicesToEmbed.push(idx);
+          }
+        });
+
+        if (textsToEmbed.length > 0) {
+          addLog(`Calculating missing embeddings for ${textsToEmbed.length} existing Logic notes...`);
+          const newEmbeddings = await getEmbeddingsBulk(textsToEmbed);
+          newEmbeddings.forEach((emb, i) => {
+            const originalIdx = indicesToEmbed[i];
+            existingLogicEmbeddings[originalIdx] = emb;
+            
+            // We should ideally save this back to Firestore, but for now we just use it in memory
+            // to avoid slowing down the initial sync setup too much. It will be saved if the note is updated.
+          });
+        }
       }
 
       const newShaMap = { ...ledger.fileShaMap };
@@ -251,7 +277,8 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
                       targetSnapshotB: cachedNote, 
                       isConflict: parentLogic.status === 'Conflict', 
                       conflictDetails: parentLogic.conflictDetails, 
-                      logicAEmbedding: null 
+                      logicAEmbedding: null,
+                      logicHash: parentLogic.embeddingHash || null
                     };
                   }
                 }
@@ -264,7 +291,22 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
                 
                 addLog(`Phase 4: Vector Search Mapping for: ${unit.title}`);
                 const logicText = `${businessLogic.title} ${businessLogic.summary}`;
-                const [logicAEmbedding] = await getEmbeddingsBulk([logicText]);
+                const logicHash = await computeHash(logicText);
+                
+                let logicAEmbedding = null;
+                
+                // Check if we can reuse the embedding from the cached note (if it was a cache hit but we still need to map)
+                // Or if we have a parent logic note that matches this hash
+                const existingLogicWithSameHash = allNotes.find(n => n.noteType === 'Logic' && n.embeddingHash === logicHash && n.embedding && n.embedding.length > 0);
+                
+                if (existingLogicWithSameHash && existingLogicWithSameHash.embedding) {
+                  addLog(`Reusing existing embedding for: ${unit.title}`);
+                  logicAEmbedding = existingLogicWithSameHash.embedding;
+                } else {
+                  addLog(`Calculating new embedding for: ${unit.title}`);
+                  const [newEmbedding] = await getEmbeddingsBulk([logicText]);
+                  logicAEmbedding = newEmbedding;
+                }
                 
                 let bestMatchLogicB = null;
                 let highestSimilarity = -1;
@@ -305,7 +347,7 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
                   conflictDetails = conflictResult.conflictDetails;
                 }
 
-                return { unit, analysis, businessLogic, unitHash, caseType, targetLogicB, targetSnapshotB, isConflict, conflictDetails, logicAEmbedding };
+                return { unit, analysis, businessLogic, unitHash, caseType, targetLogicB, targetSnapshotB, isConflict, conflictDetails, logicAEmbedding, logicHash };
               } catch (err) {
                 addLog(`Error analyzing ${unit.title}: ${err}`);
                 return null;
@@ -323,7 +365,7 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
           for (const result of processedLogics) {
             if (cancelSyncRef.current) break;
             
-            const { unit, analysis, businessLogic, unitHash, caseType, targetLogicB, targetSnapshotB, isConflict, conflictDetails, logicAEmbedding } = result;
+            const { unit, analysis, businessLogic, unitHash, caseType, targetLogicB, targetSnapshotB, isConflict, conflictDetails, logicAEmbedding, logicHash } = result;
 
             const snapshotRef = targetSnapshotB ? doc(db, 'notes', targetSnapshotB.id) : doc(collection(db, 'notes'));
             const snapshotId = targetSnapshotB ? targetSnapshotB.id : snapshotRef.id;
@@ -338,7 +380,11 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
                 status: isConflict ? 'Conflict' : 'Done',
                 lastUpdated: serverTimestamp(),
                 ...(conflictDetails ? { conflictDetails } : {}),
-                ...(unitHash ? { contentHash: unitHash } : {})
+                ...(unitHash ? { contentHash: unitHash } : {}),
+                embedding: logicAEmbedding,
+                embeddingHash: logicHash,
+                embeddingModel: 'gemini-embedding-2-preview',
+                lastEmbeddedAt: serverTimestamp()
               };
 
               if (!isConflict) {
@@ -378,7 +424,11 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
                 status: isConflict ? 'Conflict' : 'Done',
                 lastUpdated: serverTimestamp(),
                 ...(conflictDetails ? { conflictDetails } : {}),
-                ...(unitHash ? { contentHash: unitHash } : {})
+                ...(unitHash ? { contentHash: unitHash } : {}),
+                embedding: logicAEmbedding,
+                embeddingHash: logicHash,
+                embeddingModel: 'gemini-embedding-2-preview',
+                lastEmbeddedAt: serverTimestamp()
               };
 
               if (!isConflict) {
@@ -438,7 +488,11 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
                 relatedNoteIds: [],
                 uid: auth.currentUser.uid,
                 lastUpdated: serverTimestamp(),
-                ...(unitHash ? { contentHash: unitHash } : {})
+                ...(unitHash ? { contentHash: unitHash } : {}),
+                embedding: logicAEmbedding,
+                embeddingHash: logicHash,
+                embeddingModel: 'gemini-embedding-2-preview',
+                lastEmbeddedAt: serverTimestamp()
               };
               batch.set(logicRef, logicData);
               batchCount++;
@@ -568,8 +622,29 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
 
       let moduleEmbeddings: number[][] = [];
       if (existingModules.length > 0) {
-        addLog(`Generating embeddings for ${existingModules.length} existing modules...`);
-        moduleEmbeddings = await getEmbeddingsBulk(existingModules.map(m => `${m.title} ${m.summary}`));
+        addLog(`Preparing embeddings for ${existingModules.length} existing modules...`);
+        const textsToEmbed: string[] = [];
+        const indicesToEmbed: number[] = [];
+        
+        moduleEmbeddings = new Array(existingModules.length).fill([]);
+        
+        existingModules.forEach((m, idx) => {
+          if (m.embedding && m.embedding.length > 0) {
+            moduleEmbeddings[idx] = m.embedding;
+          } else {
+            textsToEmbed.push(`${m.title} ${m.summary}`);
+            indicesToEmbed.push(idx);
+          }
+        });
+
+        if (textsToEmbed.length > 0) {
+          addLog(`Calculating missing embeddings for ${textsToEmbed.length} existing modules...`);
+          const newEmbeddings = await getEmbeddingsBulk(textsToEmbed);
+          newEmbeddings.forEach((emb, i) => {
+            const originalIdx = indicesToEmbed[i];
+            moduleEmbeddings[originalIdx] = emb;
+          });
+        }
       }
 
       const CHUNK_SIZE = 20;
@@ -586,7 +661,28 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
         
         let logicEmbeddings: number[][] = [];
         if (existingModules.length > 0) {
-          logicEmbeddings = await getEmbeddingsBulk(logicTexts);
+          const textsToEmbed: string[] = [];
+          const indicesToEmbed: number[] = [];
+          
+          logicEmbeddings = new Array(chunk.length).fill([]);
+          
+          chunk.forEach((logic, idx) => {
+            if (logic.embedding && logic.embedding.length > 0) {
+              logicEmbeddings[idx] = logic.embedding;
+            } else {
+              textsToEmbed.push(`${logic.title} ${logic.summary}`);
+              indicesToEmbed.push(idx);
+            }
+          });
+
+          if (textsToEmbed.length > 0) {
+            addLog(`Calculating missing embeddings for ${textsToEmbed.length} logics in chunk...`);
+            const newEmbeddings = await getEmbeddingsBulk(textsToEmbed);
+            newEmbeddings.forEach((emb, i) => {
+              const originalIdx = indicesToEmbed[i];
+              logicEmbeddings[originalIdx] = emb;
+            });
+          }
         }
 
         const logicsWithCandidates = chunk.map((logic, idx) => {
@@ -649,9 +745,18 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
                 childNoteIds: [],
                 relatedNoteIds: [],
                 uid: auth.currentUser.uid,
-                lastUpdated: serverTimestamp()
+                lastUpdated: serverTimestamp(),
+                embeddingHash: await computeHash(`${mapping.suggestedTitle} ${mapping.suggestedSummary || ''}`),
+                embeddingModel: 'gemini-embedding-2-preview',
+                lastEmbeddedAt: serverTimestamp()
               };
+              
+              // We calculate the embedding for the new module right away so it can be used for subsequent mappings
+              const [newModuleEmbedding] = await getEmbeddingsBulk([`${mapping.suggestedTitle} ${mapping.suggestedSummary || ''}`]);
+              newModuleData.embedding = newModuleEmbedding;
+              
               existingModules.push(newModuleData as Note);
+              moduleEmbeddings.push(newModuleEmbedding);
               newModulesCreatedInChunk[mapping.suggestedTitle] = newModuleData;
               isNew = true;
               addLog(`Proposed new Module: ${newModuleData.title}`);
@@ -704,90 +809,104 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
 
   return (
     <div className="flex flex-col h-full bg-card/95 backdrop-blur-2xl border-l border-border glass shadow-2xl animate-in slide-in-from-right duration-500">
-      <div className="p-8 border-b border-border flex justify-between items-center bg-muted/5">
+      <div className="p-4 sm:p-8 border-b border-border flex justify-between items-center bg-muted/5">
         <div>
-          <h2 className="font-black text-foreground flex items-center gap-3 uppercase tracking-[0.3em] text-xs italic">
-            <Github size={20} className="text-primary glow-primary" /> Sync Engine
+          <h2 className="font-black text-foreground flex items-center gap-2 sm:gap-3 uppercase tracking-[0.3em] text-[10px] sm:text-xs italic">
+            <Github size={18} className="text-primary glow-primary" /> Sync Engine
           </h2>
-          <p className="text-[10px] font-bold text-muted-foreground/40 uppercase tracking-widest mt-1">Repository Architect</p>
+          <p className="text-[8px] sm:text-[10px] font-bold text-muted-foreground/40 uppercase tracking-widest mt-1">Repository Architect</p>
         </div>
         <button 
           onClick={onClose} 
-          className="p-2.5 text-muted-foreground hover:bg-muted rounded-xl transition-all active:scale-95 border border-transparent hover:border-border/50" 
+          className="p-2 text-muted-foreground hover:bg-muted rounded-xl transition-all active:scale-95 border border-transparent hover:border-border/50" 
           title="Close Engine"
         >
-          <X size={20} />
+          <X size={18} />
         </button>
       </div>
       
-      <div className="p-8 flex flex-col h-full overflow-hidden space-y-8">
-        <div className="space-y-6">
-          <div className="space-y-3">
-            <label className="text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em] ml-1">Source Repository</label>
-            <div className="flex gap-3">
-              <input 
-                type="text" 
-                placeholder="https://github.com/owner/repo"
-                value={repoUrl}
-                onChange={e => setRepoUrl(e.target.value)}
-                className="flex-1 p-4 bg-background/50 border border-border rounded-2xl focus:ring-2 focus:ring-primary/20 outline-none text-xs font-mono"
-              />
+      <div className="p-4 sm:p-8 flex flex-col h-full overflow-hidden space-y-6 sm:space-y-8">
+        {!projectId ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-center p-8 space-y-6">
+            <div className="w-16 h-16 bg-muted rounded-2xl flex items-center justify-center text-muted-foreground/30 shadow-inner">
+              <Github size={32} />
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-sm font-bold text-foreground uppercase tracking-widest italic">No Project Selected</h3>
+              <p className="text-[10px] text-muted-foreground/60 leading-relaxed max-w-[200px] mx-auto uppercase tracking-widest font-bold">
+                Please select a project from the explorer to activate the sync engine.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4 sm:space-y-6">
+            <div className="space-y-2 sm:space-y-3">
+              <label className="text-[9px] sm:text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em] ml-1">Source Repository</label>
+              <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
+                <input 
+                  type="text" 
+                  placeholder="https://github.com/owner/repo"
+                  value={repoUrl}
+                  onChange={e => setRepoUrl(e.target.value)}
+                  className="flex-1 p-3 sm:p-4 bg-background/50 border border-border rounded-xl sm:rounded-2xl focus:ring-2 focus:ring-primary/20 outline-none text-[10px] sm:text-xs font-mono"
+                />
+                <button 
+                  onClick={handleSaveUrl}
+                  disabled={syncing}
+                  className="px-6 py-2 bg-muted text-muted-foreground rounded-xl sm:rounded-2xl hover:bg-muted/80 disabled:opacity-50 text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-all border border-border/50"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-4">
+              {syncing || isMapping ? (
+                <button 
+                  onClick={handleCancelSync}
+                  className="flex justify-center items-center gap-3 px-4 py-3 sm:py-4 bg-destructive text-destructive-foreground rounded-xl sm:rounded-2xl hover:opacity-90 text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em] shadow-xl shadow-destructive/20 transition-all active:scale-95"
+                >
+                  <X size={16} /> Abort
+                </button>
+              ) : (
+                <button 
+                  onClick={handleSync}
+                  disabled={!repoUrl || resetting}
+                  className="flex justify-center items-center gap-3 px-4 py-3 sm:py-4 bg-primary text-primary-foreground rounded-xl sm:rounded-2xl hover:opacity-90 disabled:opacity-50 text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em] shadow-xl shadow-primary/20 transition-all active:scale-95 glow-primary"
+                >
+                  <RefreshCw size={16} className={syncing ? 'animate-spin' : ''} /> Sync
+                </button>
+              )}
+
               <button 
-                onClick={handleSaveUrl}
-                disabled={syncing}
-                className="px-6 py-2 bg-muted text-muted-foreground rounded-2xl hover:bg-muted/80 disabled:opacity-50 text-[10px] font-black uppercase tracking-widest transition-all border border-border/50"
+                onClick={handleModuleMapping}
+                disabled={syncing || resetting || isMapping}
+                className="flex justify-center items-center gap-3 px-4 py-3 sm:py-4 bg-secondary text-secondary-foreground rounded-xl sm:rounded-2xl hover:opacity-90 disabled:opacity-50 text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em] shadow-xl shadow-secondary/20 transition-all active:scale-95"
               >
-                Save
+                <RefreshCw size={16} className={isMapping ? 'animate-spin' : ''} /> {isMapping ? 'Mapping' : 'Auto-Map'}
+              </button>
+              
+              <button 
+                onClick={() => confirmReset ? executeReset() : setConfirmReset(true)}
+                disabled={syncing || resetting || isMapping}
+                className={`flex justify-center items-center gap-3 px-4 py-3 sm:py-4 rounded-xl sm:rounded-2xl text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em] transition-all active:scale-95 border ${
+                  confirmReset 
+                    ? 'bg-destructive text-destructive-foreground shadow-xl shadow-destructive/20 border-transparent' 
+                    : 'bg-muted/30 text-muted-foreground hover:bg-destructive/10 hover:text-destructive border-border/50'
+                } disabled:opacity-50`}
+              >
+                <Trash2 size={16} /> {confirmReset ? 'Confirm' : 'Reset'}
               </button>
             </div>
           </div>
-
-          <div className="grid grid-cols-3 gap-4">
-            {syncing || isMapping ? (
-              <button 
-                onClick={handleCancelSync}
-                className="flex justify-center items-center gap-3 px-4 py-4 bg-destructive text-destructive-foreground rounded-2xl hover:opacity-90 text-[10px] font-black uppercase tracking-[0.2em] shadow-xl shadow-destructive/20 transition-all active:scale-95"
-              >
-                <X size={18} /> Abort
-              </button>
-            ) : (
-              <button 
-                onClick={handleSync}
-                disabled={!repoUrl || resetting}
-                className="flex justify-center items-center gap-3 px-4 py-4 bg-primary text-primary-foreground rounded-2xl hover:opacity-90 disabled:opacity-50 text-[10px] font-black uppercase tracking-[0.2em] shadow-xl shadow-primary/20 transition-all active:scale-95 glow-primary"
-              >
-                <RefreshCw size={18} className={syncing ? 'animate-spin' : ''} /> Sync
-              </button>
-            )}
-
-            <button 
-              onClick={handleModuleMapping}
-              disabled={syncing || resetting || isMapping}
-              className="flex justify-center items-center gap-3 px-4 py-4 bg-secondary text-secondary-foreground rounded-2xl hover:opacity-90 disabled:opacity-50 text-[10px] font-black uppercase tracking-[0.2em] shadow-xl shadow-secondary/20 transition-all active:scale-95"
-            >
-              <RefreshCw size={18} className={isMapping ? 'animate-spin' : ''} /> {isMapping ? 'Mapping...' : 'Auto-Map'}
-            </button>
-            
-            <button 
-              onClick={() => confirmReset ? executeReset() : setConfirmReset(true)}
-              disabled={syncing || resetting || isMapping}
-              className={`flex justify-center items-center gap-3 px-4 py-4 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] transition-all active:scale-95 border ${
-                confirmReset 
-                  ? 'bg-destructive text-destructive-foreground shadow-xl shadow-destructive/20 border-transparent' 
-                  : 'bg-muted/30 text-muted-foreground hover:bg-destructive/10 hover:text-destructive border-border/50'
-              } disabled:opacity-50`}
-            >
-              <Trash2 size={18} /> {confirmReset ? 'Confirm' : 'Reset'}
-            </button>
-          </div>
-        </div>
+        )}
 
         <div className="flex-1 flex flex-col min-h-0">
-          <div className="flex justify-between items-center mb-3 ml-1">
-            <label className="text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em]">System Logs</label>
+          <div className="flex justify-between items-center mb-2 sm:mb-3 ml-1">
+            <label className="text-[9px] sm:text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em]">System Logs</label>
             <span className="text-[8px] font-mono text-muted-foreground/40 uppercase tracking-widest">Live Stream</span>
           </div>
-          <div className="flex-1 bg-background/30 border border-border rounded-3xl p-6 overflow-y-auto font-mono text-[10px] text-foreground/60 custom-scrollbar shadow-inner relative">
+          <div className="flex-1 bg-background/30 border border-border rounded-2xl sm:rounded-3xl p-4 sm:p-6 overflow-y-auto font-mono text-[9px] sm:text-[10px] text-foreground/60 custom-scrollbar shadow-inner relative">
             {logs.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-muted-foreground/20 italic gap-4">
                 <div className="w-12 h-12 rounded-2xl border-2 border-dashed border-muted-foreground/10 flex items-center justify-center">

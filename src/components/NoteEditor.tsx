@@ -266,90 +266,88 @@ export const NoteEditor = ({ noteId, projectId, onSaved, onDeleted }: { noteId: 
   );
 
   return (
-    <div className="flex-1 flex flex-col bg-card text-foreground rounded-3xl shadow-2xl border border-border overflow-hidden glass h-full">
+    <div className="flex-1 flex flex-col bg-card text-foreground rounded-2xl sm:rounded-3xl shadow-2xl border border-border overflow-hidden glass h-full">
       {/* Header */}
-      <div className="p-8 border-b border-border flex justify-between items-center bg-muted/5 backdrop-blur-md sticky top-0 z-10">
-        <div className="flex-1 mr-8">
+      <div className="p-4 sm:p-8 border-b border-border flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 bg-muted/5 backdrop-blur-md sticky top-0 z-10">
+        <div className="flex-1 w-full">
           <input 
             type="text" 
             value={note.title || ''} 
             onChange={e => updateNote({title: e.target.value})}
             placeholder="Note Title..."
             maxLength={200}
-            className="text-3xl font-black bg-transparent border-none outline-none w-full text-foreground placeholder:text-muted-foreground/20 tracking-tighter uppercase italic"
+            className="text-xl sm:text-3xl font-black bg-transparent border-none outline-none w-full text-foreground placeholder:text-muted-foreground/20 tracking-tighter uppercase italic"
           />
-          <div className="flex items-center gap-4 mt-3">
-            <div className="flex items-center gap-2 px-2 py-1 bg-muted rounded text-xs font-mono font-bold text-muted-foreground border border-border/50">
-              <span className="opacity-60 uppercase tracking-widest text-[9px]">UID:</span>
+          <div className="flex items-center gap-2 sm:gap-4 mt-2 sm:mt-3 flex-wrap">
+            <div className="flex items-center gap-2 px-2 py-1 bg-muted rounded text-[10px] sm:text-xs font-mono font-bold text-muted-foreground border border-border/50">
+              <span className="opacity-60 uppercase tracking-widest text-[8px] sm:text-[9px]">UID:</span>
               <span>{note.id || 'NEW_ENTRY'}</span>
             </div>
-            <div className="flex items-center gap-2 px-2 py-1 bg-primary/10 rounded text-xs font-mono font-bold text-primary border border-primary/20">
-              <span className="opacity-60 uppercase tracking-widest text-[9px]">Type:</span>
+            <div className="flex items-center gap-2 px-2 py-1 bg-primary/10 rounded text-[10px] sm:text-xs font-mono font-bold text-primary border border-primary/20">
+              <span className="opacity-60 uppercase tracking-widest text-[8px] sm:text-[9px]">Type:</span>
               <span>{note.noteType || 'Domain'}</span>
             </div>
           </div>
         </div>
-        <div className="flex gap-4 items-center">
+        <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center w-full lg:w-auto">
           {isSaving && (
-            <span className="text-[10px] font-bold text-primary animate-pulse uppercase tracking-widest mr-2">
+            <span className="text-[10px] font-bold text-primary animate-pulse uppercase tracking-widest sm:mr-2">
               Syncing...
             </span>
           )}
-          <div className="grid grid-cols-2 gap-2 min-w-[280px]">
+          <div className="grid grid-cols-2 sm:flex gap-2 w-full sm:w-auto">
             <button
               onClick={handleReformat}
               disabled={isFormatting || isSaving || noteId === 'new'}
-              className="flex items-center justify-center gap-2 px-3 py-2 bg-primary/10 hover:bg-primary/20 text-primary text-[10px] font-black uppercase tracking-widest rounded-xl transition-all active:scale-95 border border-primary/20 disabled:opacity-50"
+              className="flex items-center justify-center gap-2 px-3 py-2 bg-primary/10 hover:bg-primary/20 text-primary text-[9px] sm:text-[10px] font-black uppercase tracking-widest rounded-xl transition-all active:scale-95 border border-primary/20 disabled:opacity-50 flex-1 sm:flex-none"
               title="AI로 가독성 있게 재구성"
             >
               {isFormatting ? (
-                <Loader2 size={14} className="animate-spin" />
+                <Loader2 size={12} className="animate-spin" />
               ) : (
-                <Sparkles size={14} />
+                <Sparkles size={12} />
               )}
               <span>AI Format</span>
             </button>
             <button 
               onClick={() => setIsPreview(!isPreview)}
-              className={`flex items-center justify-center gap-2 px-3 py-2 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all active:scale-95 border ${
+              className={`flex items-center justify-center gap-2 px-3 py-2 text-[9px] sm:text-[10px] font-black uppercase tracking-widest rounded-xl transition-all active:scale-95 border flex-1 sm:flex-none ${
                 isPreview 
                   ? 'bg-primary/10 text-primary border-primary/20' 
                   : 'bg-muted text-muted-foreground hover:bg-accent border-border'
               }`}
               title={isPreview ? "Switch to Edit Mode" : "Switch to Preview Mode"}
             >
-              {isPreview ? <Edit3 size={14} /> : <Eye size={14} />}
+              {isPreview ? <Edit3 size={12} /> : <Eye size={12} />}
               {isPreview ? 'Edit' : 'Preview'}
             </button>
             <button 
               onClick={handleSave} 
               disabled={isSaving || !isDirty}
-              className="flex items-center justify-center gap-2 px-3 py-2 bg-primary text-primary-foreground text-[10px] font-black uppercase tracking-widest rounded-xl hover:opacity-90 transition-all shadow-lg shadow-primary/20 active:scale-95 glow-primary disabled:opacity-50"
+              className="flex items-center justify-center gap-2 px-3 py-2 bg-primary text-primary-foreground text-[9px] sm:text-[10px] font-black uppercase tracking-widest rounded-xl hover:opacity-90 transition-all shadow-lg shadow-primary/20 active:scale-95 glow-primary disabled:opacity-50 flex-1 sm:flex-none"
             >
-              <Save size={14} className={isSaving ? 'animate-spin' : ''} /> {isSaving ? 'Syncing' : 'Save Note'}
+              <Save size={12} className={isSaving ? 'animate-spin' : ''} /> {isSaving ? 'Sync' : 'Save'}
             </button>
-            {noteId !== 'new' ? (
+            {noteId !== 'new' && (
               <button 
                 onClick={() => {
                   if (confirmDelete) handleDelete();
                   else setConfirmDelete(true);
                 }} 
-                className={`flex items-center justify-center gap-2 px-3 py-2 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all active:scale-95 ${
+                className={`flex items-center justify-center gap-2 px-3 py-2 text-[9px] sm:text-[10px] font-black uppercase tracking-widest rounded-xl transition-all active:scale-95 flex-1 sm:flex-none ${
                   confirmDelete 
                     ? 'bg-destructive text-destructive-foreground shadow-lg shadow-destructive/20' 
                     : 'bg-muted text-muted-foreground hover:bg-destructive/10 hover:text-destructive border border-border'
                 }`}
               >
-                <Trash2 size={14} /> {confirmDelete ? 'Confirm' : 'Delete'}
+                <Trash2 size={12} /> {confirmDelete ? 'Confirm' : 'Delete'}
               </button>
-            ) : (
-              <div />
             )}
           </div>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-8 space-y-12 custom-scrollbar">
+      <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-8 sm:space-y-12 custom-scrollbar">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Left Column: Core Configuration & Version Control */}
           <div className="space-y-8">
