@@ -122,6 +122,19 @@
           },
           "description": "Vector embedding for semantic search."
         },
+        "embeddingHash": {
+          "type": "string",
+          "description": "Hash of the text used to generate the embedding."
+        },
+        "embeddingModel": {
+          "type": "string",
+          "description": "The model used to generate the embedding."
+        },
+        "lastEmbeddedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The timestamp when the embedding was last generated."
+        },
         "uid": {
           "type": "string",
           "description": "The ID of the user who owns this note."

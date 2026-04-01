@@ -113,7 +113,7 @@ service cloud.firestore {
 
     function isValidNote() {
       let requiredFields = ['title', 'projectId', 'noteType', 'lastUpdated'];
-      let allowedFields = ['title', 'projectId', 'summary', 'components', 'flow', 'io', 'body', 'folder', 'noteType', 'status', 'priority', 'lastUpdated', 'parentNoteIds', 'childNoteIds', 'relatedNoteIds', 'originPath', 'sha', 'contentHash', 'embedding', 'uid', 'id', 'createdAt', 'conflictDetails'];
+      let allowedFields = ['title', 'projectId', 'summary', 'components', 'flow', 'io', 'body', 'folder', 'noteType', 'status', 'priority', 'lastUpdated', 'parentNoteIds', 'childNoteIds', 'relatedNoteIds', 'originPath', 'sha', 'contentHash', 'embedding', 'embeddingHash', 'embeddingModel', 'lastEmbeddedAt', 'uid', 'id', 'createdAt', 'conflictDetails'];
       
       return hasRequiredFields(requiredFields) &&
              request.resource.data.keys().hasOnly(allowedFields) &&
@@ -136,6 +136,9 @@ service cloud.firestore {
              isValidOptionalString('sha', 0, 100) &&
              isValidOptionalString('contentHash', 0, 100) &&
              (!('embedding' in request.resource.data) || request.resource.data.embedding is list) &&
+             isValidOptionalString('embeddingHash', 0, 100) &&
+             isValidOptionalString('embeddingModel', 0, 100) &&
+             (!('lastEmbeddedAt' in request.resource.data) || request.resource.data.lastEmbeddedAt is timestamp) &&
              (!('conflictDetails' in request.resource.data) || request.resource.data.conflictDetails is map);
     }
 

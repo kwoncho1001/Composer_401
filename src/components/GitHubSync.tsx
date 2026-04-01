@@ -205,344 +205,436 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
       const newShaMap = { ...ledger.fileShaMap };
       let processedCount = 0;
 
-      const filesNeedingSync = filesToProcess.filter(file => !ledger.fileShaMap || ledger.fileShaMap[file.path] !== file.sha);
-      addLog(`Selected ${filesNeedingSync.length} files for synchronization.`);
+      const filesNeedingSync = filesToProcess.filter((file: any) => !ledger.fileShaMap || ledger.fileShaMap[file.path] !== file.sha);
+      addLog(`Phase 0: Selected ${filesNeedingSync.length} files for synchronization.`);
 
-      for (const file of filesToProcess) {
-        if (cancelSyncRef.current) {
-          addLog('Sync stopped by user.');
-          break;
-        }
+      if (filesNeedingSync.length === 0) {
+        addLog('No files need synchronization.');
+        setSyncing(false);
+        return;
+      }
 
-        if (ledger.fileShaMap && ledger.fileShaMap[file.path] === file.sha) {
-          continue;
-        }
-
-        addLog(`Phase 0: Change detected in ${file.path}. Starting analysis...`);
+      // Phase 1: Extract Logic Units (AST Parsing)
+      addLog(`Phase 1: Extracting logic units from all changed files using AST...`);
+      const allLogicUnits: any[] = [];
+      for (const file of filesNeedingSync) {
+        if (cancelSyncRef.current) break;
         try {
           const content = await fetchFileContent(repoUrl, file.path);
-          
-          // Phase 1: Extract Logic Units (AST Parsing)
-          addLog(`Phase 1: Extracting logic units from ${file.path} using AST...`);
           const logicUnits = parseCodeToNodes(file.path, content);
-          await new Promise(resolve => setTimeout(resolve, 500)); // 0.5s delay
-          
-          const processedLogics: any[] = [];
-          
-          // Process logic units in batches of 5 (Phase 2 -> 3 -> 4)
-          const BATCH_SIZE = 5;
-          for (let i = 0; i < logicUnits.length; i += BATCH_SIZE) {
-            if (cancelSyncRef.current) break;
-            
-            const batchUnits = logicUnits.slice(i, i + BATCH_SIZE);
-            addLog(`Processing batch of ${batchUnits.length} logic units (Phase 2 ~ 4)...`);
-
-            // Run AI analysis for the entire batch in parallel
-            const batchResults = await Promise.all(batchUnits.map(async (unit: any) => {
-              try {
-                const normalizedCode = (unit.code || "").replace(/\s+/g, '');
-                const unitHash = await computeHash(normalizedCode || (unit.title + content));
-                const cachedNote = allNotes.find(n => n.noteType === 'Snapshot' && n.contentHash === unitHash && n.originPath === file.path);
-                
-                if (cachedNote) {
-                  addLog(`Cache Hit: Skipping AI analysis for unchanged logic: ${unit.title} (Hash: ${unitHash.substring(0, 8)}...)`);
-                  // We need to find the parent Logic note to pass it down
-                  const parentLogic = allNotes.find(n => n.noteType === 'Logic' && n.childNoteIds.includes(cachedNote.id));
-                  if (parentLogic) {
-                    // We can reuse the existing Logic note's business logic
-                    const businessLogic = {
-                      title: parentLogic.title,
-                      summary: parentLogic.summary,
-                      components: parentLogic.components,
-                      flow: parentLogic.flow,
-                      io: parentLogic.io
-                    };
-                    const analysis = {
-                      title: cachedNote.title,
-                      summary: cachedNote.summary,
-                      components: cachedNote.components,
-                      flow: cachedNote.flow,
-                      io: cachedNote.io
-                    };
-                    
-                    // We still need logicAEmbedding for Phase 4 mapping if we want to re-map, 
-                    // but since it's a cache hit, it's already mapped. We can just return case 4-1 directly.
-                    return { 
-                      unit, 
-                      analysis, 
-                      businessLogic, 
-                      unitHash, 
-                      caseType: '4-1', 
-                      targetLogicB: parentLogic, 
-                      targetSnapshotB: cachedNote, 
-                      isConflict: parentLogic.status === 'Conflict', 
-                      conflictDetails: parentLogic.conflictDetails, 
-                      logicAEmbedding: null,
-                      logicHash: parentLogic.embeddingHash || null
-                    };
-                  }
-                }
-
-                addLog(`Phase 2: AI Deep Analysis (IPO Model) for: ${unit.title}`);
-                const analysis = await analyzeLogicUnit(unit.title, unit.code);
-                
-                addLog(`Phase 3: Generating Business Logic for: ${unit.title}`);
-                const businessLogic = await translateToBusinessLogic({ title: unit.title, ...analysis });
-                
-                addLog(`Phase 4: Vector Search Mapping for: ${unit.title}`);
-                const logicText = `${businessLogic.title} ${businessLogic.summary}`;
-                const logicHash = await computeHash(logicText);
-                
-                let logicAEmbedding = null;
-                
-                // Check if we can reuse the embedding from the cached note (if it was a cache hit but we still need to map)
-                // Or if we have a parent logic note that matches this hash
-                const existingLogicWithSameHash = allNotes.find(n => n.noteType === 'Logic' && n.embeddingHash === logicHash && n.embedding && n.embedding.length > 0);
-                
-                if (existingLogicWithSameHash && existingLogicWithSameHash.embedding) {
-                  addLog(`Reusing existing embedding for: ${unit.title}`);
-                  logicAEmbedding = existingLogicWithSameHash.embedding;
-                } else {
-                  addLog(`Calculating new embedding for: ${unit.title}`);
-                  const [newEmbedding] = await getEmbeddingsBulk([logicText]);
-                  logicAEmbedding = newEmbedding;
-                }
-                
-                let bestMatchLogicB = null;
-                let highestSimilarity = -1;
-
-                for (let j = 0; j < existingLogicNotes.length; j++) {
-                  const sim = cosineSimilarity(logicAEmbedding, existingLogicEmbeddings[j]);
-                  if (sim > highestSimilarity) {
-                    highestSimilarity = sim;
-                    bestMatchLogicB = existingLogicNotes[j];
-                  }
-                }
-
-                const SIMILARITY_THRESHOLD = 0.75; // Adjust as needed
-                let caseType = '4-3';
-                let targetLogicB = null;
-                let targetSnapshotB = null;
-                let isConflict = false;
-                let conflictDetails = undefined;
-
-                if (bestMatchLogicB && highestSimilarity >= SIMILARITY_THRESHOLD) {
-                  const childSnapshots = allNotes.filter(n => n.noteType === 'Snapshot' && bestMatchLogicB.childNoteIds.includes(n.id));
-                  
-                  if (childSnapshots.length > 0) {
-                    // Case 4-1: 단순 업데이트 (이미 연결된 스냅샷이 있는 경우)
-                    caseType = '4-1';
-                    targetLogicB = bestMatchLogicB;
-                    // Prefer the snapshot from the same path if multiple exist, otherwise just take the first one
-                    targetSnapshotB = childSnapshots.find(s => s.originPath === file.path) || childSnapshots[0];
-                  } else {
-                    // Case 4-2: 설계-코드 최초 연결 (연결된 스냅샷이 없는 경우)
-                    caseType = '4-2';
-                    targetLogicB = bestMatchLogicB;
-                  }
-                  
-                  // Conflict Check for both 4-1 and 4-2
-                  const conflictResult = await checkImplementationConflict(businessLogic, targetLogicB);
-                  isConflict = conflictResult.isConflict;
-                  conflictDetails = conflictResult.conflictDetails;
-                }
-
-                return { unit, analysis, businessLogic, unitHash, caseType, targetLogicB, targetSnapshotB, isConflict, conflictDetails, logicAEmbedding, logicHash };
-              } catch (err) {
-                addLog(`Error analyzing ${unit.title}: ${err}`);
-                return null;
-              }
-            }));
-
-            processedLogics.push(...batchResults.filter(Boolean));
-            await new Promise(resolve => setTimeout(resolve, 500));
+          for (const unit of logicUnits) {
+            const normalizedCode = (unit.code || "").replace(/\s+/g, '');
+            const unitHash = await computeHash(normalizedCode || (unit.title + content));
+            allLogicUnits.push({ unit, file, content, unitHash });
           }
-
-          if (cancelSyncRef.current) break;
-
-          // Phase 5: Tree Assembly & Persistence
-          addLog(`Phase 5: Tree Assembly & Persistence...`);
-          for (const result of processedLogics) {
-            if (cancelSyncRef.current) break;
-            
-            const { unit, analysis, businessLogic, unitHash, caseType, targetLogicB, targetSnapshotB, isConflict, conflictDetails, logicAEmbedding, logicHash } = result;
-
-            const snapshotRef = targetSnapshotB ? doc(db, 'notes', targetSnapshotB.id) : doc(collection(db, 'notes'));
-            const snapshotId = targetSnapshotB ? targetSnapshotB.id : snapshotRef.id;
-            
-            if (caseType === '4-1') {
-              // Update existing Snapshot B and Logic B
-              addLog(`Case 4-1: Updating existing Logic & Snapshot for ${unit.title} (Conflict: ${isConflict})`);
-              
-              const logicRef = doc(db, 'notes', targetLogicB.id);
-              
-              const logicUpdates: any = {
-                status: isConflict ? 'Conflict' : 'Done',
-                lastUpdated: serverTimestamp(),
-                ...(conflictDetails ? { conflictDetails } : {}),
-                ...(unitHash ? { contentHash: unitHash } : {}),
-                embedding: logicAEmbedding,
-                embeddingHash: logicHash,
-                embeddingModel: 'gemini-embedding-2-preview',
-                lastEmbeddedAt: serverTimestamp()
-              };
-
-              if (!isConflict) {
-                // Only update content if there is no conflict
-                logicUpdates.title = businessLogic.title.substring(0, 200);
-                logicUpdates.summary = businessLogic.summary;
-                logicUpdates.components = businessLogic.components;
-                logicUpdates.flow = businessLogic.flow;
-                logicUpdates.io = businessLogic.io;
-                logicUpdates.conflictDetails = null; // Clear any previous conflict
-              }
-
-              batch.update(logicRef, logicUpdates);
-              batchCount++;
-              
-              batch.update(snapshotRef, {
-                title: analysis.title.substring(0, 200),
-                summary: analysis.summary,
-                components: analysis.components,
-                flow: analysis.flow,
-                io: analysis.io,
-                body: unit.code,
-                sha: file.sha,
-                lastUpdated: serverTimestamp(),
-                ...(unitHash ? { contentHash: unitHash } : {})
-              });
-              batchCount++;
-              
-            } else if (caseType === '4-2') {
-              // Link Snapshot A to empty Logic B
-              addLog(`Case 4-2: Linking new Snapshot to empty Logic for ${unit.title} (Conflict: ${isConflict})`);
-              
-              const logicRef = doc(db, 'notes', targetLogicB.id);
-              
-              const logicUpdates: any = {
-                childNoteIds: arrayUnion(snapshotId),
-                status: isConflict ? 'Conflict' : 'Done',
-                lastUpdated: serverTimestamp(),
-                ...(conflictDetails ? { conflictDetails } : {}),
-                ...(unitHash ? { contentHash: unitHash } : {}),
-                embedding: logicAEmbedding,
-                embeddingHash: logicHash,
-                embeddingModel: 'gemini-embedding-2-preview',
-                lastEmbeddedAt: serverTimestamp()
-              };
-
-              if (!isConflict) {
-                logicUpdates.conflictDetails = null;
-              }
-
-              batch.update(logicRef, logicUpdates);
-              batchCount++;
-              
-              const snapshotData: Partial<Note> = {
-                id: snapshotId,
-                title: analysis.title.substring(0, 200),
-                projectId,
-                summary: analysis.summary || '',
-                components: analysis.components || null,
-                flow: analysis.flow || null,
-                io: analysis.io || null,
-                body: '',
-                folder: file.path,
-                noteType: 'Snapshot',
-                status: 'Done',
-                priority: 'Done',
-                parentNoteIds: [targetLogicB.id],
-                childNoteIds: [],
-                relatedNoteIds: [],
-                originPath: file.path,
-                sha: file.sha,
-                uid: auth.currentUser.uid,
-                lastUpdated: serverTimestamp()
-              };
-              batch.set(snapshotRef, snapshotData);
-              batchCount++;
-              allNotes.push(snapshotData as Note);
-              
-            } else if (caseType === '4-3') {
-              // Create new Logic A and Snapshot A
-              addLog(`Case 4-3: Creating new Logic & Snapshot for ${unit.title}`);
-              
-              const logicRef = doc(collection(db, 'notes'));
-              const logicId = logicRef.id;
-              
-              const logicData: Partial<Note> = {
-                id: logicId,
-                title: businessLogic.title.substring(0, 200),
-                projectId,
-                summary: businessLogic.summary || '',
-                components: businessLogic.components || null,
-                flow: businessLogic.flow || null,
-                io: businessLogic.io || null,
-                body: '',
-                folder: file.path,
-                noteType: 'Logic',
-                status: 'Planned',
-                priority: 'C',
-                parentNoteIds: [],
-                childNoteIds: [snapshotId],
-                relatedNoteIds: [],
-                uid: auth.currentUser.uid,
-                lastUpdated: serverTimestamp(),
-                ...(unitHash ? { contentHash: unitHash } : {}),
-                embedding: logicAEmbedding,
-                embeddingHash: logicHash,
-                embeddingModel: 'gemini-embedding-2-preview',
-                lastEmbeddedAt: serverTimestamp()
-              };
-              batch.set(logicRef, logicData);
-              batchCount++;
-              
-              const snapshotData: Partial<Note> = {
-                id: snapshotId,
-                title: analysis.title.substring(0, 200),
-                projectId,
-                summary: analysis.summary || '',
-                components: analysis.components || null,
-                flow: analysis.flow || null,
-                io: analysis.io || null,
-                body: '',
-                folder: file.path,
-                noteType: 'Snapshot',
-                status: 'Done',
-                priority: 'Done',
-                parentNoteIds: [logicId],
-                childNoteIds: [],
-                relatedNoteIds: [],
-                originPath: file.path,
-                sha: file.sha,
-                uid: auth.currentUser.uid,
-                lastUpdated: serverTimestamp()
-              };
-              batch.set(snapshotRef, snapshotData);
-              batchCount++;
-              
-              allNotes.push(logicData as Note);
-              allNotes.push(snapshotData as Note);
-              existingLogicNotes.push(logicData as Note);
-              existingLogicEmbeddings.push(logicAEmbedding);
-            }
-            
-            if (batchCount >= 450) await commitBatch();
-          }
-
-          if (!cancelSyncRef.current) {
-            newShaMap[file.path] = file.sha;
-            processedCount++;
-          }
-          
-          // Commit batch after each file to show progress immediately in Explorer
-          await commitBatch();
         } catch (err) {
-          addLog(`Error processing ${file.path}: ${err}`);
+          addLog(`Error extracting logic units from ${file.path}: ${err}`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      if (cancelSyncRef.current) {
+        addLog('Sync stopped by user.');
+        setSyncing(false);
+        return;
+      }
+
+      // Phase 2: AI Deep Analysis (IPO Model)
+      addLog(`Phase 2: AI Deep Analysis (IPO Model) for ${allLogicUnits.length} logic units...`);
+      const BATCH_SIZE = 3;
+      for (let i = 0; i < allLogicUnits.length; i += BATCH_SIZE) {
+        if (cancelSyncRef.current) break;
+        const batchUnits = allLogicUnits.slice(i, i + BATCH_SIZE);
+        addLog(`Phase 2: Processing batch ${Math.floor(i/BATCH_SIZE) + 1} of ${Math.ceil(allLogicUnits.length/BATCH_SIZE)}...`);
+
+        await Promise.all(batchUnits.map(async (item) => {
+          const { unit, file, unitHash } = item;
+          const cachedNote = allNotes.find(n => n.noteType === 'Snapshot' && n.contentHash === unitHash && n.originPath === file.path);
+          
+          if (cachedNote) {
+            addLog(`Cache Hit: Skipping AI analysis for unchanged logic: ${unit.title} (Hash: ${unitHash.substring(0, 8)}...)`);
+            const parentLogic = allNotes.find(n => n.noteType === 'Logic' && n.childNoteIds.includes(cachedNote.id));
+            if (parentLogic) {
+              item.isCacheHit = true;
+              item.cachedNote = cachedNote;
+              item.parentLogic = parentLogic;
+              item.businessLogic = {
+                title: parentLogic.title,
+                summary: parentLogic.summary,
+                components: parentLogic.components,
+                flow: parentLogic.flow,
+                io: parentLogic.io
+              };
+              item.analysis = {
+                title: cachedNote.title,
+                summary: cachedNote.summary,
+                components: cachedNote.components,
+                flow: cachedNote.flow,
+                io: cachedNote.io
+              };
+              item.caseType = '4-1';
+              item.targetLogicB = parentLogic;
+              item.targetSnapshotB = cachedNote;
+              item.isConflict = parentLogic.status === 'Conflict';
+              item.conflictDetails = parentLogic.conflictDetails;
+              item.logicAEmbedding = null;
+              item.logicHash = parentLogic.embeddingHash || null;
+            }
+          }
+
+          if (!item.isCacheHit) {
+            try {
+              addLog(`Phase 2: Analyzing: ${unit.title}`);
+              item.analysis = await analyzeLogicUnit(unit.title, unit.code);
+            } catch (err) {
+              addLog(`Error analyzing ${unit.title}: ${err}`);
+              item.error = true;
+            }
+          }
+        }));
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      if (cancelSyncRef.current) {
+        addLog('Sync stopped by user.');
+        setSyncing(false);
+        return;
+      }
+
+      // Phase 3: Generating Business Logic
+      addLog(`Phase 3: Generating Business Logic for logic units...`);
+      for (let i = 0; i < allLogicUnits.length; i += BATCH_SIZE) {
+        if (cancelSyncRef.current) break;
+        const batchUnits = allLogicUnits.slice(i, i + BATCH_SIZE).filter(item => !item.isCacheHit && !item.error);
+        
+        if (batchUnits.length > 0) {
+          addLog(`Phase 3: Processing batch ${Math.floor(i/BATCH_SIZE) + 1} of ${Math.ceil(allLogicUnits.length/BATCH_SIZE)}...`);
+          await Promise.all(batchUnits.map(async (item) => {
+            try {
+              addLog(`Phase 3: Translating: ${item.unit.title}`);
+              item.businessLogic = await translateToBusinessLogic({ title: item.unit.title, ...item.analysis });
+            } catch (err) {
+              addLog(`Error translating ${item.unit.title}: ${err}`);
+              item.error = true;
+            }
+          }));
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
       }
 
-      // Final commit for notes
+      if (cancelSyncRef.current) {
+        addLog('Sync stopped by user.');
+        setSyncing(false);
+        return;
+      }
+
+      // Phase 4: Vector Search Mapping
+      addLog(`Phase 4: Vector Search Mapping for logic units...`);
+      
+      // Bulk Embedding Calculation
+      const unitsToEmbed = allLogicUnits.filter(item => !item.isCacheHit && !item.error);
+      const textsToEmbed: string[] = [];
+      const indicesToEmbed: number[] = [];
+      
+      for (let i = 0; i < unitsToEmbed.length; i++) {
+        const item = unitsToEmbed[i];
+        const logicText = `${item.businessLogic.title} ${item.businessLogic.summary}`;
+        const logicHash = await computeHash(logicText);
+        item.logicHash = logicHash;
+        
+        const existingLogicWithSameHash = allNotes.find(n => n.noteType === 'Logic' && n.embeddingHash === logicHash && n.embedding && n.embedding.length > 0);
+        
+        if (existingLogicWithSameHash && existingLogicWithSameHash.embedding) {
+          addLog(`Reusing existing embedding for: ${item.unit.title}`);
+          item.logicAEmbedding = existingLogicWithSameHash.embedding;
+        } else {
+          textsToEmbed.push(logicText);
+          indicesToEmbed.push(i);
+        }
+      }
+
+      if (textsToEmbed.length > 0) {
+        addLog(`Phase 4: Calculating embeddings in bulk for ${textsToEmbed.length} logic units...`);
+        const EMBED_CHUNK_SIZE = 20;
+        for (let i = 0; i < textsToEmbed.length; i += EMBED_CHUNK_SIZE) {
+          if (cancelSyncRef.current) break;
+          const chunkTexts = textsToEmbed.slice(i, i + EMBED_CHUNK_SIZE);
+          const chunkIndices = indicesToEmbed.slice(i, i + EMBED_CHUNK_SIZE);
+          try {
+            const newEmbeddings = await getEmbeddingsBulk(chunkTexts);
+            newEmbeddings.forEach((emb, idx) => {
+              const originalIdx = chunkIndices[idx];
+              unitsToEmbed[originalIdx].logicAEmbedding = emb;
+            });
+          } catch (err) {
+            addLog(`Error calculating embeddings: ${err}`);
+            chunkIndices.forEach(idx => {
+               unitsToEmbed[idx].error = true;
+            });
+          }
+        }
+      }
+
+      if (cancelSyncRef.current) {
+        addLog('Sync stopped by user.');
+        setSyncing(false);
+        return;
+      }
+
+      // Similarity matching and conflict detection
+      addLog(`Phase 4: Matching logic units to existing notes...`);
+      for (let i = 0; i < unitsToEmbed.length; i += BATCH_SIZE) {
+        if (cancelSyncRef.current) break;
+        const batchUnits = unitsToEmbed.slice(i, i + BATCH_SIZE).filter(item => !item.error && item.logicAEmbedding);
+        
+        if (batchUnits.length > 0) {
+          await Promise.all(batchUnits.map(async (item) => {
+            let bestMatchLogicB = null;
+            let highestSimilarity = -1;
+
+            for (let j = 0; j < existingLogicNotes.length; j++) {
+              const sim = cosineSimilarity(item.logicAEmbedding, existingLogicEmbeddings[j]);
+              if (sim > highestSimilarity) {
+                highestSimilarity = sim;
+                bestMatchLogicB = existingLogicNotes[j];
+              }
+            }
+
+            const SIMILARITY_THRESHOLD = 0.75;
+            item.caseType = '4-3';
+            item.targetLogicB = null;
+            item.targetSnapshotB = null;
+            item.isConflict = false;
+            item.conflictDetails = undefined;
+
+            if (bestMatchLogicB && highestSimilarity >= SIMILARITY_THRESHOLD) {
+              const childSnapshots = allNotes.filter(n => n.noteType === 'Snapshot' && bestMatchLogicB.childNoteIds.includes(n.id));
+              
+              if (childSnapshots.length > 0) {
+                item.caseType = '4-1';
+                item.targetLogicB = bestMatchLogicB;
+                item.targetSnapshotB = childSnapshots.find(s => s.originPath === item.file.path) || childSnapshots[0];
+              } else {
+                item.caseType = '4-2';
+                item.targetLogicB = bestMatchLogicB;
+              }
+              
+              try {
+                const conflictResult = await checkImplementationConflict(item.businessLogic, item.targetLogicB);
+                item.isConflict = conflictResult.isConflict;
+                item.conflictDetails = conflictResult.conflictDetails;
+              } catch (err) {
+                addLog(`Error checking conflict for ${item.unit.title}: ${err}`);
+              }
+            }
+          }));
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+
+      if (cancelSyncRef.current) {
+        addLog('Sync stopped by user.');
+        setSyncing(false);
+        return;
+      }
+
+      // Phase 5: Tree Assembly & Persistence
+      addLog(`Phase 5: Tree Assembly & Persistence...`);
+      
+      const unitsByFile = new Map<string, any[]>();
+      for (const item of allLogicUnits) {
+        if (item.error) continue;
+        const path = item.file.path;
+        if (!unitsByFile.has(path)) {
+          unitsByFile.set(path, []);
+        }
+        unitsByFile.get(path)!.push(item);
+      }
+
+      for (const file of filesNeedingSync) {
+        if (cancelSyncRef.current) break;
+        
+        const fileUnits = unitsByFile.get(file.path) || [];
+        
+        for (const result of fileUnits) {
+          const { unit, file: currentFile, analysis, businessLogic, unitHash, caseType, targetLogicB, targetSnapshotB, isConflict, conflictDetails, logicAEmbedding, logicHash } = result;
+
+          const snapshotRef = targetSnapshotB ? doc(db, 'notes', targetSnapshotB.id) : doc(collection(db, 'notes'));
+          const snapshotId = targetSnapshotB ? targetSnapshotB.id : snapshotRef.id;
+          
+          if (caseType === '4-1') {
+            addLog(`Case 4-1: Updating existing Logic & Snapshot for ${unit.title} (Conflict: ${isConflict})`);
+            
+            const logicRef = doc(db, 'notes', targetLogicB.id);
+            
+            const logicUpdates: any = {
+              status: isConflict ? 'Conflict' : 'Done',
+              lastUpdated: serverTimestamp(),
+              ...(conflictDetails ? { conflictDetails } : {}),
+              ...(unitHash ? { contentHash: unitHash } : {}),
+              ...(logicAEmbedding ? { embedding: logicAEmbedding } : {}),
+              ...(logicHash ? { embeddingHash: logicHash } : {}),
+              embeddingModel: 'gemini-embedding-2-preview',
+              lastEmbeddedAt: serverTimestamp()
+            };
+
+            if (!isConflict && !result.isCacheHit) {
+              logicUpdates.title = businessLogic.title.substring(0, 200);
+              logicUpdates.summary = businessLogic.summary;
+              logicUpdates.components = businessLogic.components;
+              logicUpdates.flow = businessLogic.flow;
+              logicUpdates.io = businessLogic.io;
+              logicUpdates.conflictDetails = null;
+            }
+
+            batch.update(logicRef, logicUpdates);
+            batchCount++;
+            
+            const snapshotUpdates: any = {
+              lastUpdated: serverTimestamp(),
+              sha: currentFile.sha,
+              ...(unitHash ? { contentHash: unitHash } : {})
+            };
+            
+            if (!result.isCacheHit) {
+              snapshotUpdates.title = analysis.title.substring(0, 200);
+              snapshotUpdates.summary = analysis.summary;
+              snapshotUpdates.components = analysis.components;
+              snapshotUpdates.flow = analysis.flow;
+              snapshotUpdates.io = analysis.io;
+              snapshotUpdates.body = unit.code;
+            }
+
+            batch.update(snapshotRef, snapshotUpdates);
+            batchCount++;
+            
+          } else if (caseType === '4-2') {
+            addLog(`Case 4-2: Linking new Snapshot to empty Logic for ${unit.title} (Conflict: ${isConflict})`);
+            
+            const logicRef = doc(db, 'notes', targetLogicB.id);
+            
+            const logicUpdates: any = {
+              childNoteIds: arrayUnion(snapshotId),
+              status: isConflict ? 'Conflict' : 'Done',
+              lastUpdated: serverTimestamp(),
+              ...(conflictDetails ? { conflictDetails } : {}),
+              ...(unitHash ? { contentHash: unitHash } : {}),
+              ...(logicAEmbedding ? { embedding: logicAEmbedding } : {}),
+              ...(logicHash ? { embeddingHash: logicHash } : {}),
+              embeddingModel: 'gemini-embedding-2-preview',
+              lastEmbeddedAt: serverTimestamp()
+            };
+
+            if (!isConflict) {
+              logicUpdates.conflictDetails = null;
+            }
+
+            batch.update(logicRef, logicUpdates);
+            batchCount++;
+            
+            const snapshotData: Partial<Note> = {
+              id: snapshotId,
+              title: analysis.title.substring(0, 200),
+              projectId,
+              summary: analysis.summary || '',
+              components: analysis.components || null,
+              flow: analysis.flow || null,
+              io: analysis.io || null,
+              body: unit.code || '',
+              folder: currentFile.path,
+              noteType: 'Snapshot',
+              status: 'Done',
+              priority: 'Done',
+              parentNoteIds: [targetLogicB.id],
+              childNoteIds: [],
+              relatedNoteIds: [],
+              originPath: currentFile.path,
+              sha: currentFile.sha,
+              uid: auth.currentUser.uid,
+              lastUpdated: serverTimestamp(),
+              ...(unitHash ? { contentHash: unitHash } : {})
+            };
+            batch.set(snapshotRef, snapshotData);
+            batchCount++;
+            allNotes.push(snapshotData as Note);
+            
+          } else if (caseType === '4-3') {
+            addLog(`Case 4-3: Creating new Logic & Snapshot for ${unit.title}`);
+            
+            const logicRef = doc(collection(db, 'notes'));
+            const logicId = logicRef.id;
+            
+            const logicData: Partial<Note> = {
+              id: logicId,
+              title: businessLogic.title.substring(0, 200),
+              projectId,
+              summary: businessLogic.summary || '',
+              components: businessLogic.components || null,
+              flow: businessLogic.flow || null,
+              io: businessLogic.io || null,
+              body: '',
+              folder: currentFile.path,
+              noteType: 'Logic',
+              status: 'Planned',
+              priority: 'C',
+              parentNoteIds: [],
+              childNoteIds: [snapshotId],
+              relatedNoteIds: [],
+              uid: auth.currentUser.uid,
+              lastUpdated: serverTimestamp(),
+              ...(unitHash ? { contentHash: unitHash } : {}),
+              ...(logicAEmbedding ? { embedding: logicAEmbedding } : {}),
+              ...(logicHash ? { embeddingHash: logicHash } : {}),
+              embeddingModel: 'gemini-embedding-2-preview',
+              lastEmbeddedAt: serverTimestamp()
+            };
+            batch.set(logicRef, logicData);
+            batchCount++;
+            
+            const snapshotData: Partial<Note> = {
+              id: snapshotId,
+              title: analysis.title.substring(0, 200),
+              projectId,
+              summary: analysis.summary || '',
+              components: analysis.components || null,
+              flow: analysis.flow || null,
+              io: analysis.io || null,
+              body: unit.code || '',
+              folder: currentFile.path,
+              noteType: 'Snapshot',
+              status: 'Done',
+              priority: 'Done',
+              parentNoteIds: [logicId],
+              childNoteIds: [],
+              relatedNoteIds: [],
+              originPath: currentFile.path,
+              sha: currentFile.sha,
+              uid: auth.currentUser.uid,
+              lastUpdated: serverTimestamp(),
+              ...(unitHash ? { contentHash: unitHash } : {})
+            };
+            batch.set(snapshotRef, snapshotData);
+            batchCount++;
+            
+            allNotes.push(logicData as Note);
+            allNotes.push(snapshotData as Note);
+            existingLogicNotes.push(logicData as Note);
+            if (logicAEmbedding) {
+              existingLogicEmbeddings.push(logicAEmbedding);
+            }
+          }
+          
+          if (batchCount >= 450) await commitBatch();
+        }
+
+        if (!cancelSyncRef.current) {
+          newShaMap[file.path] = file.sha;
+          processedCount++;
+        }
+        
+        await commitBatch();
+      }
+
       await commitBatch();
 
       // 3. Update Ledger
@@ -731,6 +823,10 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
             } else {
               const moduleRef = doc(collection(db, 'notes'));
               moduleId = moduleRef.id;
+              
+              // We calculate the embedding for the new module right away so it can be used for subsequent mappings
+              const [newModuleEmbedding] = await getEmbeddingsBulk([`${mapping.suggestedTitle} ${mapping.suggestedSummary || ''}`]);
+              
               newModuleData = {
                 id: moduleId,
                 title: mapping.suggestedTitle.substring(0, 200),
@@ -748,22 +844,15 @@ export const GitHubSync = ({ onClose, projectId }: { onClose: () => void, projec
                 lastUpdated: serverTimestamp(),
                 embeddingHash: await computeHash(`${mapping.suggestedTitle} ${mapping.suggestedSummary || ''}`),
                 embeddingModel: 'gemini-embedding-2-preview',
-                lastEmbeddedAt: serverTimestamp()
+                lastEmbeddedAt: serverTimestamp(),
+                embedding: newModuleEmbedding
               };
-              
-              // We calculate the embedding for the new module right away so it can be used for subsequent mappings
-              const [newModuleEmbedding] = await getEmbeddingsBulk([`${mapping.suggestedTitle} ${mapping.suggestedSummary || ''}`]);
-              newModuleData.embedding = newModuleEmbedding;
               
               existingModules.push(newModuleData as Note);
               moduleEmbeddings.push(newModuleEmbedding);
               newModulesCreatedInChunk[mapping.suggestedTitle] = newModuleData;
               isNew = true;
               addLog(`Proposed new Module: ${newModuleData.title}`);
-              
-              // Generate embedding for the new module so the next chunk can match it
-              const newEmb = await getEmbeddingsBulk([`${newModuleData.title} ${newModuleData.summary}`]);
-              moduleEmbeddings.push(newEmb[0] || []);
             }
           }
 
